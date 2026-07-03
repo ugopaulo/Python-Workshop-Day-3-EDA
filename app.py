@@ -1,523 +1,249 @@
-# ============================================================
-# BrainScope EDA
-# Part 1 - Upload & Basic Exploration
-# ============================================================
+"""
+Brainy EDA — A Streamlit app for quick exploratory data analysis.
 
-import streamlit as st
+Upload a CSV or Excel file and get instant access to summary stats,
+missing-value diagnostics, histograms, boxplots, correlation heatmaps,
+scatter plots, and a pairplot — all in one scrolling page.
+"""
+
+import io
+
 import pandas as pd
-import numpy as np
-
-import matplotlib.pyplot as plt
-import seaborn as sns
 import plotly.express as px
-from scipy import stats
+import streamlit as st
 
-import sweetviz as sv
-from ydata_profiling import ProfileReport
-
-import tempfile
-import warnings
-
-warnings.filterwarnings("ignore")
-
-# ------------------------------------------------------------
-# Page Configuration
-# ------------------------------------------------------------
-
+# ----------------------------------------------------------------------------
+# Page config — set this first, before any other Streamlit call
+# ----------------------------------------------------------------------------
 st.set_page_config(
-    page_title="BrainScope EDA",
+    page_title="Brainy EDA",
     page_icon="🧠",
-    layout="wide"
+    layout="wide",
 )
 
-st.title("🧠 BrainScope EDA")
-st.write("Upload a dataset and perform exploratory data analysis.")
+# ----------------------------------------------------------------------------
+# Header
+# ----------------------------------------------------------------------------
+st.title("🧠 Brainy EDA")
+st.caption("Upload a dataset and let the brain do the exploring.")
 
-# ============================================================
-# Upload Dataset
-# ============================================================
+
+# ----------------------------------------------------------------------------
+# Helpers
+# ----------------------------------------------------------------------------
+@st.cache_data(show_spinner=False)
+def load_data(uploaded_file) -> pd.DataFrame:
+    """Read an uploaded CSV or Excel file into a DataFrame."""
+    name = uploaded_file.name.lower()
+    if name.endswith(".csv"):
+        return pd.read_csv(uploaded_file)
+    elif name.endswith((".xlsx", ".xls")):
+        return pd.read_excel(uploaded_file)
+    else:
+        raise ValueError("Unsupported file type. Please upload a .csv, .xlsx, or .xls file.")
+
+
+def get_numeric_columns(df: pd.DataFrame) -> list[str]:
+    return df.select_dtypes(include="number").columns.tolist()
+
+
+def get_all_columns(df: pd.DataFrame) -> list[str]:
+    return df.columns.tolist()
+
+
+# ----------------------------------------------------------------------------
+# 1. Upload
+# ----------------------------------------------------------------------------
+st.header("1. Upload your data")
 
 uploaded_file = st.file_uploader(
-    "Upload a CSV or Excel file",
-    type=["csv", "xlsx", "xls"]
+    "Choose a CSV or Excel file",
+    type=["csv", "xlsx", "xls"],
+    help="Works with .csv, .xlsx, and .xls files.",
 )
 
 if uploaded_file is None:
-    st.info("Please upload a dataset to begin.")
+    st.info("👆 Upload a file to unlock the exploration tools below.")
     st.stop()
-
-# ============================================================
-# Load Dataset
-# ============================================================
-
-@st.cache_data
-def load_data(file):
-
-    if file.name.endswith(".csv"):
-        return pd.read_csv(file)
-
-    return pd.read_excel(file)
 
 try:
-
     df = load_data(uploaded_file)
-
 except Exception as e:
-
-    st.error(f"Error loading dataset:\n{e}")
+    st.error(f"Couldn't read that file: {e}")
     st.stop()
 
-# ============================================================
-# Dataset Overview
-# ============================================================
+if df.empty:
+    st.warning("The uploaded file has no rows. Please try a different file.")
+    st.stop()
 
-st.header("Dataset Overview")
+st.success(f"Loaded **{uploaded_file.name}** — {df.shape[0]} rows × {df.shape[1]} columns")
 
-rows, cols = df.shape
+with st.expander("Preview data", expanded=True):
+    st.dataframe(df.head(20), use_container_width=True)
 
-numeric_cols = df.select_dtypes(include=np.number).columns
-categorical_cols = df.select_dtypes(exclude=np.number).columns
+numeric_cols = get_numeric_columns(df)
+all_cols = get_all_columns(df)
+
+# ----------------------------------------------------------------------------
+# 2. Overview & summary stats
+# ----------------------------------------------------------------------------
+st.header("2. Overview")
 
 col1, col2, col3, col4 = st.columns(4)
+col1.metric("Rows", df.shape[0])
+col2.metric("Columns", df.shape[1])
+col3.metric("Numeric columns", len(numeric_cols))
+col4.metric("Missing values", int(df.isna().sum().sum()))
 
-col1.metric("Rows", rows)
-col2.metric("Columns", cols)
-col3.metric("Numeric Columns", len(numeric_cols))
-col4.metric("Categorical Columns", len(categorical_cols))
-
-st.divider()
-
-# ============================================================
-# Dataset Preview
-# ============================================================
-
-st.subheader("Dataset Preview")
-
-preview = st.selectbox(
-    "Preview",
-    ["Head", "Tail", "Random Sample"]
-)
-
-if preview == "Head":
-
-    st.dataframe(df.head(), use_container_width=True)
-
-elif preview == "Tail":
-
-    st.dataframe(df.tail(), use_container_width=True)
-
+st.subheader("Summary statistics")
+if numeric_cols:
+    st.dataframe(df[numeric_cols].describe().T, use_container_width=True)
 else:
+    st.info("No numeric columns found for summary statistics.")
 
-    sample_size = min(10, len(df))
-
-    st.dataframe(
-        df.sample(sample_size),
-        use_container_width=True
-    )
-
-st.divider()
-
-# ============================================================
-# Column Information
-# ============================================================
-
-st.subheader("Column Information")
-
-info_df = pd.DataFrame({
-
-    "Column": df.columns,
-
-    "Data Type": df.dtypes.astype(str),
-
-    "Non-Null Count": df.count().values,
-
-    "Missing Values": df.isnull().sum().values,
-
-    "Unique Values": df.nunique().values
-
-})
-
-st.dataframe(
-    info_df,
-    use_container_width=True
+st.subheader("Column info")
+info_df = pd.DataFrame(
+    {
+        "dtype": df.dtypes.astype(str),
+        "non-null count": df.notna().sum(),
+        "null count": df.isna().sum(),
+        "null %": (df.isna().mean() * 100).round(2),
+        "unique values": df.nunique(),
+    }
 )
+st.dataframe(info_df, use_container_width=True)
 
-st.divider()
+# ----------------------------------------------------------------------------
+# 3. Missing values
+# ----------------------------------------------------------------------------
+st.header("3. Missing values")
 
-# ============================================================
-# Summary Statistics
-# ============================================================
-
-st.subheader("Summary Statistics")
-
-stats_option = st.radio(
-    "Statistics",
-    ["Numeric Only", "All Columns"],
-    horizontal=True
-)
-
-if stats_option == "Numeric Only":
-
-    st.dataframe(
-        df.describe().T,
-        use_container_width=True
-    )
-
+if df.isna().sum().sum() == 0:
+    st.success("No missing values found. Nice and clean! ✨")
 else:
-
-    st.dataframe(
-        df.describe(include="all").T,
-        use_container_width=True
+    missing_fig = px.imshow(
+        df.isna(),
+        color_continuous_scale=["#EDEDED", "#5B2A86"],
+        aspect="auto",
+        labels=dict(color="Missing"),
+        title="Missing value map (light = present, purple = missing)",
     )
+    missing_fig.update_coloraxes(showscale=False)
+    st.plotly_chart(missing_fig, use_container_width=True)
 
-st.divider()
+# ----------------------------------------------------------------------------
+# 4. Histograms
+# ----------------------------------------------------------------------------
+st.header("4. Histograms")
 
-# ============================================================
-# Missing Value Summary
-# ============================================================
-
-st.subheader("Missing Values")
-
-missing = pd.DataFrame({
-
-    "Missing Count": df.isnull().sum(),
-
-    "Percentage (%)":
-        (df.isnull().mean() * 100).round(2)
-
-})
-
-missing = missing[
-    missing["Missing Count"] > 0
-]
-
-if missing.empty:
-
-    st.success("No missing values detected.")
-
+if numeric_cols:
+    hist_col = st.selectbox("Choose a numeric column", numeric_cols, key="hist_col")
+    bins = st.slider("Number of bins", min_value=5, max_value=100, value=30, key="hist_bins")
+    hist_fig = px.histogram(df, x=hist_col, nbins=bins, marginal="box", title=f"Distribution of {hist_col}")
+    st.plotly_chart(hist_fig, use_container_width=True)
 else:
+    st.info("No numeric columns available for histograms.")
 
-    st.dataframe(
-        missing,
-        use_container_width=True
+# ----------------------------------------------------------------------------
+# 5. Boxplots
+# ----------------------------------------------------------------------------
+st.header("5. Boxplots")
+
+if numeric_cols:
+    box_cols = st.multiselect(
+        "Choose numeric column(s)",
+        numeric_cols,
+        default=numeric_cols[: min(3, len(numeric_cols))],
+        key="box_cols",
     )
-
-st.divider()
-
-# ============================================================
-# Duplicate Rows
-# ============================================================
-
-st.subheader("Duplicate Rows")
-
-duplicates = df.duplicated().sum()
-
-if duplicates == 0:
-
-    st.success("No duplicate rows detected.")
-
+    if box_cols:
+        box_fig = px.box(df, y=box_cols, points="outliers", title="Boxplot(s) for outlier detection")
+        st.plotly_chart(box_fig, use_container_width=True)
+    else:
+        st.info("Select at least one column to see a boxplot.")
 else:
+    st.info("No numeric columns available for boxplots.")
 
-    st.warning(f"{duplicates} duplicate rows found.")
+# ----------------------------------------------------------------------------
+# 6. Correlation heatmap
+# ----------------------------------------------------------------------------
+st.header("6. Correlation heatmap")
 
-st.divider()
+if len(numeric_cols) >= 2:
+    corr_method = st.selectbox("Correlation method", ["pearson", "spearman", "kendall"], key="corr_method")
+    corr = df[numeric_cols].corr(method=corr_method)
+    corr_fig = px.imshow(
+        corr,
+        text_auto=".2f",
+        color_continuous_scale="RdBu_r",
+        zmin=-1,
+        zmax=1,
+        title=f"{corr_method.title()} correlation",
+    )
+    st.plotly_chart(corr_fig, use_container_width=True)
+else:
+    st.info("Need at least two numeric columns for a correlation heatmap.")
 
-# ============================================================
-# Chunk 2 - Visualisations
-# ============================================================
+# ----------------------------------------------------------------------------
+# 7. Scatter plot
+# ----------------------------------------------------------------------------
+st.header("7. Scatter plot")
 
-st.header("Visualisations")
+if len(numeric_cols) >= 2:
+    scatter_col1, scatter_col2, scatter_col3 = st.columns(3)
+    x_col = scatter_col1.selectbox("X axis", numeric_cols, index=0, key="scatter_x")
+    y_col = scatter_col2.selectbox(
+        "Y axis", numeric_cols, index=min(1, len(numeric_cols) - 1), key="scatter_y"
+    )
+    color_options = ["None"] + all_cols
+    color_col = scatter_col3.selectbox("Color by (optional)", color_options, key="scatter_color")
+    color_arg = None if color_col == "None" else color_col
+    scatter_fig = px.scatter(
+        df, x=x_col, y=y_col, color=color_arg, title=f"{y_col} vs {x_col}", trendline=None
+    )
+    st.plotly_chart(scatter_fig, use_container_width=True)
+else:
+    st.info("Need at least two numeric columns for a scatter plot.")
 
-analysis = st.selectbox(
-    "Choose a visualisation",
-    [
-        "Correlation Heatmap",
-        "Histogram",
-        "Scatter Plot",
-        "Box Plot",
-        "Count Plot",
-        "QQ Plot"
-    ]
-)
+# ----------------------------------------------------------------------------
+# 8. Pairplot / scatter matrix
+# ----------------------------------------------------------------------------
+st.header("8. Pairplot")
 
-# ------------------------------------------------------------
-# Correlation Heatmap
-# ------------------------------------------------------------
-
-if analysis == "Correlation Heatmap":
-
-    if len(numeric_cols) < 2:
-        st.warning("At least two numeric columns are required.")
+if len(numeric_cols) >= 2:
+    default_pair_cols = numeric_cols[: min(4, len(numeric_cols))]
+    pair_cols = st.multiselect(
+        "Choose numeric columns (2–6 recommended for readability)",
+        numeric_cols,
+        default=default_pair_cols,
+        key="pair_cols",
+    )
+    if len(pair_cols) >= 2:
+        pair_fig = px.scatter_matrix(df, dimensions=pair_cols, title="Scatter matrix")
+        pair_fig.update_traces(diagonal_visible=False)
+        st.plotly_chart(pair_fig, use_container_width=True)
     else:
-
-        method = st.selectbox(
-            "Correlation Method",
-            ["pearson", "spearman", "kendall"]
-        )
-
-        corr = df[numeric_cols].corr(method=method)
-
-        fig, ax = plt.subplots(figsize=(10, 6))
-
-        sns.heatmap(
-            corr,
-            annot=True,
-            cmap="coolwarm",
-            linewidths=0.5,
-            ax=ax
-        )
-
-        st.pyplot(fig)
-
-# ------------------------------------------------------------
-# Histogram
-# ------------------------------------------------------------
-
-elif analysis == "Histogram":
-
-    if len(numeric_cols) == 0:
-        st.warning("No numeric columns available.")
-
-    else:
-
-        column = st.selectbox(
-            "Select Column",
-            numeric_cols
-        )
-
-        bins = st.slider(
-            "Bins",
-            5,
-            100,
-            30
-        )
-
-        fig = px.histogram(
-            df,
-            x=column,
-            nbins=bins,
-            title=f"Histogram of {column}"
-        )
-
-        st.plotly_chart(
-            fig,
-            use_container_width=True
-        )
-
-# ------------------------------------------------------------
-# Scatter Plot
-# ------------------------------------------------------------
-
-elif analysis == "Scatter Plot":
-
-    if len(numeric_cols) < 2:
-        st.warning("At least two numeric columns are required.")
-
-    else:
-
-        x = st.selectbox(
-            "X-axis",
-            numeric_cols
-        )
-
-        y = st.selectbox(
-            "Y-axis",
-            numeric_cols,
-            index=1
-        )
-
-        colour = st.selectbox(
-            "Colour (optional)",
-            ["None"] + list(df.columns)
-        )
-
-        fig = px.scatter(
-            df,
-            x=x,
-            y=y,
-            color=None if colour == "None" else colour,
-            title=f"{y} vs {x}"
-        )
-
-        st.plotly_chart(
-            fig,
-            use_container_width=True
-        )
-
-# ------------------------------------------------------------
-# Box Plot
-# ------------------------------------------------------------
-
-elif analysis == "Box Plot":
-
-    if len(numeric_cols) == 0:
-        st.warning("No numeric columns available.")
-
-    else:
-
-        column = st.selectbox(
-            "Numeric Column",
-            numeric_cols
-        )
-
-        fig = px.box(
-            df,
-            y=column,
-            title=f"Box Plot of {column}"
-        )
-
-        st.plotly_chart(
-            fig,
-            use_container_width=True
-        )
-
-# ------------------------------------------------------------
-# Count Plot
-# ------------------------------------------------------------
-
-elif analysis == "Count Plot":
-
-    if len(categorical_cols) == 0:
-        st.warning("No categorical columns available.")
-
-    else:
-
-        column = st.selectbox(
-            "Categorical Column",
-            categorical_cols
-        )
-
-        fig = px.histogram(
-            df,
-            x=column,
-            title=f"Count Plot of {column}"
-        )
-
-        st.plotly_chart(
-            fig,
-            use_container_width=True
-        )
-
-# ------------------------------------------------------------
-# QQ Plot
-# ------------------------------------------------------------
-
-elif analysis == "QQ Plot":
-
-    if len(numeric_cols) == 0:
-        st.warning("No numeric columns available.")
-
-    else:
-
-        column = st.selectbox(
-            "Numeric Column",
-            numeric_cols
-        )
-
-        fig, ax = plt.subplots(figsize=(6, 6))
-
-        stats.probplot(
-            df[column].dropna(),
-            dist="norm",
-            plot=ax
-        )
-
-        ax.set_title(f"QQ Plot of {column}")
-
-        st.pyplot(fig)
-
-st.divider()
-
-# ============================================================
-# Chunk 3 - Reports
-# ============================================================
-
-st.header("Reports")
-
-report = st.selectbox(
-    "Choose a report",
-    [
-        "None",
-        "Sweetviz",
-        "YData Profiling"
-    ]
-)
-
-# ------------------------------------------------------------
-# Sweetviz
-# ------------------------------------------------------------
-
-if report == "Sweetviz":
-
-    if st.button("Generate Sweetviz Report"):
-
-        with st.spinner("Generating report..."):
-
-            temp_file = tempfile.NamedTemporaryFile(
-                delete=False,
-                suffix=".html"
-            )
-
-            report = sv.analyze(df)
-
-            report.show_html(
-                temp_file.name,
-                open_browser=False
-            )
-
-            with open(temp_file.name, "rb") as f:
-
-                st.download_button(
-                    "Download Sweetviz Report",
-                    f,
-                    file_name="sweetviz_report.html",
-                    mime="text/html"
-                )
-
-# ------------------------------------------------------------
-# YData Profiling
-# ------------------------------------------------------------
-
-elif report == "YData Profiling":
-
-    if st.button("Generate Profiling Report"):
-
-        with st.spinner("Generating report..."):
-
-            profile = ProfileReport(
-                df,
-                explorative=True
-            )
-
-            html = profile.to_html()
-
-            st.download_button(
-                "Download Profiling Report",
-                html,
-                file_name="profiling_report.html",
-                mime="text/html"
-            )
-
-st.divider()
-
-# ============================================================
-# Dataset Download
-# ============================================================
-
-st.header("Download Dataset")
-
-csv = df.to_csv(index=False).encode("utf-8")
-
+        st.info("Select at least two columns to see a pairplot.")
+else:
+    st.info("Need at least two numeric columns for a pairplot.")
+
+# ----------------------------------------------------------------------------
+# 9. Export cleaned data
+# ----------------------------------------------------------------------------
+st.header("9. Export")
+
+excel_buffer = io.BytesIO()
+with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
+    df.to_excel(writer, index=False, sheet_name="data")
 st.download_button(
-    "Download Clean Dataset",
-    csv,
-    file_name="dataset.csv",
-    mime="text/csv"
+    "Download data as Excel (.xlsx)",
+    data=excel_buffer.getvalue(),
+    file_name="data_export.xlsx",
+    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 )
 
+# ----------------------------------------------------------------------------
+# Footer
+# ----------------------------------------------------------------------------
 st.divider()
-
-st.caption(
-    "BrainScope EDA | Built with Streamlit"
-)
-
+st.caption("🧠 Brainy EDA — built with Streamlit")
